@@ -79,6 +79,34 @@ describe('getLaunchArgs', () => {
     expect(height).toBeCloseTo(7.5, 4);
   }, 30000);
 
+  it('exports opaque solid slide backgrounds as native PowerPoint fills', async () => {
+    const html = `
+      <!doctype html>
+      <html>
+      <body style="margin:0">
+        <div class="slide" style="width:1920px;height:1080px;position:relative;background:#231f20">
+          <h1 style="color:#e2dcd7">Editable title</h1>
+        </div>
+      </body>
+      </html>
+    `;
+    const buffer = await exportHtmlToPptx(html, {
+      selector: '.slide',
+      pptxOptions: { width: 13.333333, height: 7.5 },
+    });
+    const zip = await JSZip.loadAsync(buffer);
+    const xml = new DOMParser().parseFromString(await zip.file('ppt/slides/slide1.xml').async('string'), 'text/xml');
+    const background = xml.getElementsByTagName('p:bg')[0];
+    const textShapes = [...xml.getElementsByTagName('p:sp')].filter(
+      (shape) => shape.getElementsByTagName('p:txBody').length > 0
+    );
+
+    expect(background).toBeDefined();
+    expect(background.getElementsByTagName('a:srgbClr')[0].getAttribute('val')).toBe('231F20');
+    expect(textShapes.length).toBe(1);
+    expect(xml.getElementsByTagName('p:pic').length).toBe(0);
+  }, 30000);
+
   it('exports pseudo-elements (linear-gradients and border triangles) correctly', async () => {
     const html = `
       <!doctype html>
@@ -145,7 +173,7 @@ describe('getLaunchArgs', () => {
     });
 
     const zip = await JSZip.loadAsync(buffer);
-    const mediaFiles = Object.keys(zip.files).filter(k => k.startsWith('ppt/media/'));
+    const mediaFiles = Object.keys(zip.files).filter((k) => k.startsWith('ppt/media/'));
     expect(mediaFiles.length).toBeGreaterThanOrEqual(2);
   }, 40000);
 });

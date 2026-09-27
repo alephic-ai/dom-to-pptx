@@ -96,6 +96,8 @@ export async function normalizePptxZip(zip, options = {}) {
     zip.file('[Content_Types].xml', serialized);
   }
 
+  const slideSize = await readPresentationSlideSize(zip);
+
   // Process all XML files inside the ppt/ directory
   for (const [relativePath, file] of Object.entries(zip.files)) {
     if (relativePath.startsWith('ppt/') && relativePath.endsWith('.xml')) {
@@ -144,6 +146,10 @@ export async function normalizePptxZip(zip, options = {}) {
         if (sortSpTree(doc)) {
           mutated = true;
         }
+
+        if (promoteSlideBackground(doc, slideSize)) {
+          mutated = true;
+        }
       }
 
       if (mutated) {
@@ -152,6 +158,136 @@ export async function normalizePptxZip(zip, options = {}) {
       }
     }
   }
+}
+
+async function readPresentationSlideSize(zip) {
+  const presentationFile = zip.file('ppt/presentation.xml');
+  if (!presentationFile) return null;
+
+  try {
+    const xml = await presentationFile.async('string');
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    if (doc.getElementsByTagName('parsererror').length > 0) return null;
+
+    const sldSz = Array.from(doc.getElementsByTagName('*')).find((node) => node.localName === 'sldSz');
+    const width = Number(sldSz?.getAttribute('cx'));
+    const height = Number(sldSz?.getAttribute('cy'));
+    if (!Number.isSafeInteger(width) || width <= 0 || !Number.isSafeInteger(height) || height <= 0) return null;
+
+    return { width, height };
+  } catch {
+    return null;
+  }
+}
+
+function promoteSlideBackground(doc, slideSize) {
+  if (!slideSize) return false;
+
+  const cSld = Array.from(doc.getElementsByTagName('*')).find((node) => node.localName === 'cSld');
+  if (!cSld) return false;
+
+  const cSldChildren = Array.from(cSld.childNodes).filter((node) => node.nodeType === 1);
+  if (cSldChildren.some((node) => node.localName === 'bg')) return false;
+
+  const spTree = cSldChildren.find((node) => node.localName === 'spTree');
+  if (!spTree) return false;
+
+  const visualChildren = Array.from(spTree.childNodes).filter(
+    (node) => node.nodeType === 1 && !['nvGrpSpPr', 'grpSpPr', 'extLst'].includes(node.localName)
+  );
+  const shape = visualChildren[0];
+  if (!shape || shape.localName !== 'sp' || hasAnimationTarget(doc, shape)) return false;
+  if (Array.from(shape.getElementsByTagName('*')).some((node) => node.localName === 'txBody')) return false;
+
+  const shapeChildren = Array.from(shape.childNodes).filter((node) => node.nodeType === 1);
+  if (shapeChildren.some((node) => !['nvSpPr', 'spPr'].includes(node.localName))) return false;
+  if (shapeChildren.filter((node) => node.localName === 'spPr').length !== 1) return false;
+  if (shapeChildren.filter((node) => node.localName === 'nvSpPr').length !== 1) return false;
+
+  const spPr = shapeChildren.find((node) => node.localName === 'spPr');
+  if (!spPr) return false;
+  const properties = Array.from(spPr.childNodes).filter((node) => node.nodeType === 1);
+  if (properties.some((node) => !['xfrm', 'prstGeom', 'solidFill', 'ln'].includes(node.localName))) return false;
+
+  const xfrms = properties.filter((node) => node.localName === 'xfrm');
+  const geometries = properties.filter((node) => node.localName === 'prstGeom');
+  const fills = properties.filter((node) => node.localName === 'solidFill');
+  const lines = properties.filter((node) => node.localName === 'ln');
+  if (xfrms.length !== 1 || geometries.length !== 1 || fills.length !== 1 || lines.length > 1) return false;
+
+  if (!isFullSlideTransform(xfrms[0], slideSize)) return false;
+  if (!isPlainRectangle(geometries[0])) return false;
+  if (!isOpaqueSolidFill(fills[0])) return false;
+  if (lines.length > 0 && !hasNoVisibleLine(lines[0])) return false;
+
+  const cNvPr = Array.from(shape.getElementsByTagName('*')).find((node) => node.localName === 'cNvPr');
+  if (!cNvPr || ['1', 'true'].includes(cNvPr.getAttribute('hidden')?.toLowerCase())) return false;
+
+  const pNamespace = cSld.namespaceURI || 'http://schemas.openxmlformats.org/presentationml/2006/main';
+  const background = doc.createElementNS(pNamespace, 'p:bg');
+  const backgroundProperties = doc.createElementNS(pNamespace, 'p:bgPr');
+  backgroundProperties.appendChild(doc.importNode(fills[0], true));
+  background.appendChild(backgroundProperties);
+
+  spTree.removeChild(shape);
+  cSld.insertBefore(background, spTree);
+  return true;
+}
+
+function hasAnimationTarget(doc, shape) {
+  const cNvPr = Array.from(shape.getElementsByTagName('*')).find((node) => node.localName === 'cNvPr');
+  const shapeId = cNvPr?.getAttribute('id');
+  if (!shapeId) return false;
+
+  return Array.from(doc.getElementsByTagName('*')).some(
+    (node) => node.localName === 'spTgt' && node.getAttribute('spid') === shapeId
+  );
+}
+
+function isFullSlideTransform(xfrm, slideSize) {
+  if (xfrm.attributes.length > 0) return false;
+  const children = Array.from(xfrm.childNodes).filter((node) => node.nodeType === 1);
+  const off = children.filter((node) => node.localName === 'off');
+  const ext = children.filter((node) => node.localName === 'ext');
+  if (children.length !== 2 || off.length !== 1 || ext.length !== 1) return false;
+
+  const offChildren = Array.from(off[0].childNodes).filter((node) => node.nodeType === 1);
+  const extChildren = Array.from(ext[0].childNodes).filter((node) => node.nodeType === 1);
+  if (offChildren.length > 0 || extChildren.length > 0) return false;
+
+  const x = off[0].getAttribute('x');
+  const y = off[0].getAttribute('y');
+  const width = ext[0].getAttribute('cx');
+  const height = ext[0].getAttribute('cy');
+  if (![x, y, width, height].every((value) => value !== null && /^-?\d+$/.test(value))) return false;
+
+  return Number(x) === 0 && Number(y) === 0 && Number(width) === slideSize.width && Number(height) === slideSize.height;
+}
+
+function isPlainRectangle(geometry) {
+  if (geometry.getAttribute('prst') !== 'rect') return false;
+  const children = Array.from(geometry.childNodes).filter((node) => node.nodeType === 1);
+  return children.length <= 1 && children.every((node) => node.localName === 'avLst' && node.childNodes.length === 0);
+}
+
+function isOpaqueSolidFill(fill) {
+  const colors = Array.from(fill.childNodes).filter((node) => node.nodeType === 1);
+  if (colors.length !== 1 || colors[0].localName !== 'srgbClr') return false;
+  if (!/^[\da-f]{6}$/i.test(colors[0].getAttribute('val') || '')) return false;
+
+  const transforms = Array.from(colors[0].childNodes).filter((node) => node.nodeType === 1);
+  if (transforms.length === 0) return true;
+  return (
+    transforms.length === 1 &&
+    transforms[0].localName === 'alpha' &&
+    Number(transforms[0].getAttribute('val')) === 100000 &&
+    !Array.from(transforms[0].childNodes).some((node) => node.nodeType === 1)
+  );
+}
+
+function hasNoVisibleLine(line) {
+  const children = Array.from(line.childNodes).filter((node) => node.nodeType === 1);
+  return children.length === 0 || (children.length === 1 && children[0].localName === 'noFill');
 }
 
 function cleanParagraphProperties(doc) {

@@ -38,6 +38,7 @@ import {
 import { getProcessedImage } from './image-processor.js';
 import { parseAnimation } from './animations/css-parser.js';
 import { extractTransitionFromElement } from './animations/transitions.js';
+import { lowerSimpleSvgPrimitives, lowerSupportedSvgPaths } from './svg-shape-lowering.js';
 
 const PPI = 96;
 const PX_TO_INCH = 1 / PPI;
@@ -1579,6 +1580,30 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
 
   // --- ASYNC JOB: SVG Tags ---
   if ((node?.nodeName || '').toLowerCase() === 'svg') {
+    const nativePaths = lowerSupportedSvgPaths(node, {
+      x,
+      y,
+      w,
+      h,
+      domOrder,
+      zIndex: parentSortKey,
+      pptx,
+      inheritedOpacity,
+    });
+    if (nativePaths) return { items: nativePaths, stopRecursion: true };
+
+    const nativeShapes = lowerSimpleSvgPrimitives(node, {
+      x,
+      y,
+      w,
+      h,
+      domOrder,
+      zIndex: parentSortKey,
+      pptx,
+      inheritedOpacity,
+    });
+    if (nativeShapes) return { items: nativeShapes, stopRecursion: true };
+
     const item = {
       type: 'image',
       zIndex: parentSortKey.concat([0, -1]),
