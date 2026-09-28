@@ -18,6 +18,8 @@ describe('native SVG path export', () => {
           .slide:nth-of-type(5) svg { width: 172px; height: 28px; }
           .scaled-ancestor { position: relative; transform: scale(0.125); transform-origin: top left; }
           .rotated-ancestor { position: relative; transform: rotate(5deg); transform-origin: top left; }
+          #hidden-group { visibility: hidden; }
+          .force-visible { visibility: visible; }
         </style>
       </head>
       <body>
@@ -100,6 +102,14 @@ describe('native SVG path export', () => {
             <path class="mark-fill" d="M 10 10 L 90 10 L 90 90 Z" />
           </svg>
         </div>
+        <div class="slide">
+          <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <g id="hidden-group">
+              <path class="force-visible" d="M 10 10 L 30 10 L 30 30 Z" fill="#c26d4f" />
+            </g>
+            <path d="M 50 50 L 70 50 L 70 70 Z" fill="#c26d4f" />
+          </svg>
+        </div>
       </body>
       </html>
     `;
@@ -175,5 +185,14 @@ describe('native SVG path export', () => {
       expect(xml.getElementsByTagName('p:sp')).toHaveLength(0);
       expect(xml.getElementsByTagName('p:pic')).toHaveLength(1);
     }
+  });
+
+  it('does not drop visible paths that override a hidden group', async () => {
+    const xml = new DOMParser().parseFromString(await zip.file('ppt/slides/slide11.xml').async('string'), 'text/xml');
+    const shapes = [...xml.getElementsByTagName('p:sp')];
+
+    expect(shapes).toHaveLength(2);
+    expect(shapes.every((shape) => shape.getElementsByTagName('a:custGeom').length === 1)).toBe(true);
+    expect(xml.getElementsByTagName('p:pic')).toHaveLength(0);
   });
 });

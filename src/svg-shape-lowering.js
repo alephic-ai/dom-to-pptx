@@ -558,7 +558,7 @@ function collectPathElements(svg) {
       if (child.localName === 'g') {
         if (!hasOnlySupportedAttributes(child, GROUP_ATTRIBUTES)) return false;
         const style = window.getComputedStyle(child);
-        if (style.display === 'none' || style.visibility === 'hidden' || parseOpacity(style.opacity) === 0) continue;
+        if (style.display === 'none' || parseOpacity(style.opacity) === 0) continue;
         if (!hasDefaultEffects(style) || parseOpacity(style.opacity) !== 1) return false;
         if (!visit(child)) return false;
         continue;
