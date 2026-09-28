@@ -20,6 +20,8 @@ describe('native SVG path export', () => {
           .rotated-ancestor { position: relative; transform: rotate(5deg); transform-origin: top left; }
           #hidden-group { visibility: hidden; }
           .force-visible { visibility: visible; }
+          .collapse-path { visibility: collapse; }
+          svg rect:first-child { visibility: collapse; }
         </style>
       </head>
       <body>
@@ -110,6 +112,18 @@ describe('native SVG path export', () => {
             <path d="M 50 50 L 70 50 L 70 70 Z" fill="#c26d4f" />
           </svg>
         </div>
+        <div class="slide">
+          <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <path class="collapse-path" d="M 10 10 L 30 10 L 30 30 Z" fill="#c26d4f" />
+            <path d="M 50 50 L 70 50 L 70 70 Z" fill="#c26d4f" />
+          </svg>
+        </div>
+        <div class="slide">
+          <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <rect x="10" y="10" width="20" height="20" fill="#c26d4f" />
+            <rect x="50" y="50" width="20" height="20" fill="#c26d4f" />
+          </svg>
+        </div>
       </body>
       </html>
     `;
@@ -194,5 +208,22 @@ describe('native SVG path export', () => {
     expect(shapes).toHaveLength(2);
     expect(shapes.every((shape) => shape.getElementsByTagName('a:custGeom').length === 1)).toBe(true);
     expect(xml.getElementsByTagName('p:pic')).toHaveLength(0);
+  });
+
+  it('does not lower SVG elements whose visibility is collapsed', async () => {
+    const pathXml = new DOMParser().parseFromString(await zip.file('ppt/slides/slide12.xml').async('string'), 'text/xml');
+    const pathShapes = [...pathXml.getElementsByTagName('p:sp')];
+    expect(pathShapes).toHaveLength(1);
+    expect(pathShapes[0].getElementsByTagName('a:custGeom')).toHaveLength(1);
+    expect(pathXml.getElementsByTagName('p:pic')).toHaveLength(0);
+
+    const primitiveXml = new DOMParser().parseFromString(
+      await zip.file('ppt/slides/slide13.xml').async('string'),
+      'text/xml'
+    );
+    const primitiveShapes = [...primitiveXml.getElementsByTagName('p:sp')];
+    expect(primitiveShapes).toHaveLength(1);
+    expect(primitiveShapes[0].getElementsByTagName('a:prstGeom')[0]?.getAttribute('prst')).toBe('rect');
+    expect(primitiveXml.getElementsByTagName('p:pic')).toHaveLength(0);
   });
 });

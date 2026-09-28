@@ -566,7 +566,14 @@ function collectPathElements(svg) {
 
       if (child.localName !== 'path' || !hasOnlySupportedAttributes(child, PATH_ATTRIBUTES)) return false;
       const style = window.getComputedStyle(child);
-      if (style.display === 'none' || style.visibility === 'hidden' || parseOpacity(style.opacity) === 0) continue;
+      if (
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        style.visibility === 'collapse' ||
+        parseOpacity(style.opacity) === 0
+      ) {
+        continue;
+      }
       if (!hasDefaultEffects(style) || parseOpacity(style.opacity) !== 1 || style.fillRule !== 'nonzero') return false;
       if (style.stroke !== 'none' || parseOpacity(style.strokeOpacity) !== 1) return false;
 
@@ -695,7 +702,14 @@ export function lowerSimpleSvgPrimitives(node, { x, y, w, h, domOrder, zIndex, p
 
     const childStyle = window.getComputedStyle(child);
     const childOpacity = parseOpacity(childStyle.opacity);
-    if (childOpacity === 0 || childStyle.display === 'none' || childStyle.visibility === 'hidden') continue;
+    if (
+      childOpacity === 0 ||
+      childStyle.display === 'none' ||
+      childStyle.visibility === 'hidden' ||
+      childStyle.visibility === 'collapse'
+    ) {
+      continue;
+    }
     if (childOpacity !== 1 || !hasDefaultEffects(childStyle)) return null;
 
     const fill = tag === 'line' ? { color: null, opacity: 0 } : parsePaint(childStyle.fill);
