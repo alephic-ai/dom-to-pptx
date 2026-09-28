@@ -211,7 +211,10 @@ describe('native SVG path export', () => {
   });
 
   it('does not lower SVG elements whose visibility is collapsed', async () => {
-    const pathXml = new DOMParser().parseFromString(await zip.file('ppt/slides/slide12.xml').async('string'), 'text/xml');
+    const pathXml = new DOMParser().parseFromString(
+      await zip.file('ppt/slides/slide12.xml').async('string'),
+      'text/xml'
+    );
     const pathShapes = [...pathXml.getElementsByTagName('p:sp')];
     expect(pathShapes).toHaveLength(1);
     expect(pathShapes[0].getElementsByTagName('a:custGeom')).toHaveLength(1);
