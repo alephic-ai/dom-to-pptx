@@ -17,11 +17,16 @@ const ROOT_ATTRIBUTES = new Set([
 
 const PATH_ROOT_ATTRIBUTES = new Set([
   ...ROOT_ATTRIBUTES,
+  'id',
+  'data-name',
   'aria-hidden',
   'aria-label',
   'role',
   'data-alephic-slide-element',
+  'data-alephic-svg-image-vectorized',
 ]);
+
+const GROUP_ATTRIBUTES = new Set(['id', 'data-name']);
 
 const PRIMITIVE_ATTRIBUTES = {
   rect: new Set([
@@ -66,7 +71,12 @@ const PATH_ATTRIBUTES = new Set([
 
 const PAINT_STYLE_PROPERTIES = new Set(['fill', 'stroke', 'stroke-width', 'fill-opacity', 'stroke-opacity', 'opacity']);
 
+// The converter may carry the source image's measured box styling onto the
+// inline SVG root. Geometry and stacking are supplied separately; computed
+// transform, clip, and opacity values are still checked before lowering.
 const ROOT_LAYOUT_STYLE_PROPERTIES = new Set([
+  'box-sizing',
+  'clip-path',
   'width',
   'height',
   'position',
@@ -77,6 +87,22 @@ const ROOT_LAYOUT_STYLE_PROPERTIES = new Set([
   'display',
   'visibility',
   'overflow',
+  'margin',
+  'margin-top',
+  'margin-right',
+  'margin-bottom',
+  'margin-left',
+  'opacity',
+  'padding',
+  'padding-top',
+  'padding-right',
+  'padding-bottom',
+  'padding-left',
+  'transform',
+  'transform-box',
+  'transform-origin',
+  'vertical-align',
+  'z-index',
 ]);
 
 const NUMBER_PATTERN = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
@@ -104,6 +130,11 @@ function hasOnlySupportedAttributes(node, allowed, isRoot = false) {
   return isSupportedStyleAttribute(node, isRoot);
 }
 
+function hasOnlyEmptyStyleAttributes(node) {
+  // Chromium can materialize empty style attributes on parsed SVG descendants.
+  return [...node.attributes].every((attribute) => attribute.name === 'style' && attribute.value.trim() === '');
+}
+
 function readNumber(node, attribute, fallback) {
   if (!node.hasAttribute(attribute)) return fallback;
   const value = node.getAttribute(attribute).trim();
@@ -127,6 +158,77 @@ function readViewBox(node) {
   const [x, y, width, height] = values;
   if (width <= 0 || height <= 0) return null;
   return { x, y, width, height };
+}
+
+function getViewBoxMapping(node, width, height, viewBox) {
+  const preserveAspectRatio = node.getAttribute('preserveAspectRatio')?.trim() || 'xMidYMid meet';
+  const alignment = preserveAspectRatio.split(/\s+/);
+  const scaleX = width / viewBox.width;
+  const scaleY = height / viewBox.height;
+
+  if (alignment.length === 1 && alignment[0] === 'none') {
+    return { scaleX, scaleY, offsetX: 0, offsetY: 0, mode: 'none' };
+  }
+
+  if (
+    (alignment[0] !== 'xMidYMid' && alignment[0] !== 'xMinYMid') ||
+    (alignment.length > 1 && alignment[1] !== 'meet') ||
+    alignment.length > 2
+  ) {
+    return null;
+  }
+
+  const scale = Math.min(scaleX, scaleY);
+  return {
+    scaleX: scale,
+    scaleY: scale,
+    offsetX: alignment[0] === 'xMinYMid' ? 0 : (width - viewBox.width * scale) / 2,
+    offsetY: (height - viewBox.height * scale) / 2,
+    mode: 'meet',
+  };
+}
+
+function parseSupportedStylesheet(node) {
+  if (!hasOnlyEmptyStyleAttributes(node) || [...node.childNodes].some((child) => child.nodeType !== 3)) {
+    return null;
+  }
+
+  let source = node.textContent || '';
+  const selectors = new Set();
+  while (source.trim()) {
+    source = source.trimStart();
+    const match = /^\.([A-Za-z_][\w-]*)\s*\{([^{}]*)\}/.exec(source);
+    if (!match || selectors.has(match[1])) return null;
+
+    let hasFill = false;
+    let hasZeroStrokeWidth = false;
+    const declarations = match[2]
+      .split(';')
+      .map((declaration) => declaration.trim())
+      .filter(Boolean);
+    if (declarations.length === 0) return null;
+    for (const declaration of declarations) {
+      const separator = declaration.indexOf(':');
+      if (separator < 0) return null;
+      const property = declaration.slice(0, separator).trim();
+      const value = declaration.slice(separator + 1).trim();
+      if (property === 'fill' && !hasFill && /^#[\da-f]{3}(?:[\da-f])?$|^#[\da-f]{6}(?:[\da-f]{2})?$/i.test(value)) {
+        hasFill = true;
+        continue;
+      }
+      if (property === 'stroke-width' && !hasZeroStrokeWidth && /^0+(?:\.0+)?(?:px)?$/i.test(value)) {
+        hasZeroStrokeWidth = true;
+        continue;
+      }
+      return null;
+    }
+    if (!hasFill) return null;
+
+    selectors.add(match[1]);
+    source = source.slice(match[0].length);
+  }
+
+  return selectors.size > 0 ? selectors : null;
 }
 
 function parseOpacity(value) {
@@ -163,19 +265,35 @@ function hasDefaultEffects(style) {
   );
 }
 
+function hasOnlyUniformScaleAndTranslation(transform) {
+  if (transform === 'none') return true;
+  const matrix = /^matrix\(([^)]+)\)$/.exec(transform);
+  if (!matrix) return false;
+  const values = matrix[1].split(/\s*,\s*/).map(Number);
+  if (values.length !== 6 || values.some((value) => !Number.isFinite(value))) return false;
+  const [scaleX, skewY, skewX, scaleY] = values;
+  const tolerance = Math.max(Math.abs(scaleX), Math.abs(scaleY), 1) * 1e-9;
+  return (
+    scaleX > 0 &&
+    scaleY > 0 &&
+    Math.abs(scaleX - scaleY) <= tolerance &&
+    Math.abs(skewX) <= tolerance &&
+    Math.abs(skewY) <= tolerance
+  );
+}
+
 function hasUnrepresentedAncestorEffect(node) {
   let ancestor = node.parentElement;
   while (ancestor) {
     const style = window.getComputedStyle(ancestor);
     if (
-      style.transform !== 'none' ||
+      !hasOnlyUniformScaleAndTranslation(style.transform) ||
       style.filter !== 'none' ||
       style.clipPath !== 'none' ||
       style.mask !== 'none' ||
       style.mixBlendMode !== 'normal'
-    ) {
+    )
       return true;
-    }
     ancestor = ancestor.parentElement;
   }
   return false;
@@ -410,6 +528,7 @@ function pathPointsAreInsideViewBox(points, viewBox, toleranceX, toleranceY) {
 
 function collectPathElements(svg) {
   const paths = [];
+  const stylesheetClasses = new Set();
 
   function visit(parent) {
     for (const child of parent.childNodes) {
@@ -418,12 +537,26 @@ function collectPathElements(svg) {
       if (child.nodeType !== 1) return false;
 
       if (child.localName === 'defs') {
-        if (child.attributes.length > 0 || [...child.childNodes].some((node) => node.nodeType === 1)) return false;
+        const definitions = [...child.childNodes].filter((node) => node.nodeType === 1);
+        if (
+          !hasOnlyEmptyStyleAttributes(child) ||
+          [...child.childNodes].some(
+            (node) => (node.nodeType === 3 && node.nodeValue.trim()) || ![1, 3, 8].includes(node.nodeType)
+          ) ||
+          definitions.length > 1 ||
+          (definitions.length === 1 && definitions[0].localName !== 'style')
+        ) {
+          return false;
+        }
+        if (definitions.length === 0) continue;
+        const selectors = parseSupportedStylesheet(definitions[0]);
+        if (!selectors) return false;
+        for (const selector of selectors) stylesheetClasses.add(selector);
         continue;
       }
 
       if (child.localName === 'g') {
-        if (child.attributes.length > 0) return false;
+        if (!hasOnlySupportedAttributes(child, GROUP_ATTRIBUTES)) return false;
         const style = window.getComputedStyle(child);
         if (style.display === 'none' || style.visibility === 'hidden' || parseOpacity(style.opacity) === 0) continue;
         if (!hasDefaultEffects(style) || parseOpacity(style.opacity) !== 1) return false;
@@ -443,13 +576,20 @@ function collectPathElements(svg) {
 
       const points = parseSupportedPathData(child.getAttribute('d') || '');
       if (!points) return false;
-      paths.push({ points, fill: fill.color });
+      paths.push({
+        points,
+        fill: fill.color,
+        classes: (child.getAttribute('class') || '').split(/\s+/).filter(Boolean),
+      });
     }
 
     return true;
   }
 
-  return visit(svg) && paths.length > 0 ? paths : null;
+  if (!visit(svg) || paths.length === 0) return null;
+  const pathClasses = new Set(paths.flatMap(({ classes }) => classes));
+  if (![...stylesheetClasses].every((className) => pathClasses.has(className))) return null;
+  return paths;
 }
 
 /**
@@ -458,9 +598,6 @@ function collectPathElements(svg) {
  */
 export function lowerSupportedSvgPaths(node, { x, y, w, h, domOrder, zIndex, pptx, inheritedOpacity = 1 }) {
   if (hasUnrepresentedAncestorEffect(node)) return null;
-  if (node.getAttribute('preserveAspectRatio') && node.getAttribute('preserveAspectRatio').trim() !== 'xMidYMid meet') {
-    return null;
-  }
   if (!hasOnlySupportedAttributes(node, PATH_ROOT_ATTRIBUTES, true)) return null;
 
   const rootStyle = window.getComputedStyle(node);
@@ -468,31 +605,30 @@ export function lowerSupportedSvgPaths(node, { x, y, w, h, domOrder, zIndex, ppt
 
   const viewBox = readViewBox(node);
   if (!viewBox || w <= 0 || h <= 0) return null;
-  const scaleX = w / viewBox.width;
-  const scaleY = h / viewBox.height;
-  if (Math.abs(scaleX - scaleY) > Math.max(scaleX, scaleY) * 1e-3) return null;
+  const mapping = getViewBoxMapping(node, w, h, viewBox);
+  if (!mapping) return null;
 
   const paths = collectPathElements(node);
   if (!paths) return null;
-  const toleranceX = 0.1 / (scaleX * 96);
-  const toleranceY = 0.1 / (scaleY * 96);
+  const toleranceX = 0.1 / (mapping.scaleX * 96);
+  const toleranceY = 0.1 / (mapping.scaleY * 96);
   if (paths.some(({ points }) => !pathPointsAreInsideViewBox(points, viewBox, toleranceX, toleranceY))) return null;
 
   return paths.map(({ points, fill }, pathIndex) => {
     const pptxPoints = points.map((point) => {
       if ('close' in point) return { close: true };
       const mapped = {
-        x: (point.x - viewBox.x) * scaleX,
-        y: (point.y - viewBox.y) * scaleY,
+        x: mapping.offsetX + (point.x - viewBox.x) * mapping.scaleX,
+        y: mapping.offsetY + (point.y - viewBox.y) * mapping.scaleY,
         ...(point.moveTo && { moveTo: true }),
       };
       if (point.curve) {
         mapped.curve = {
           type: 'cubic',
-          x1: (point.curve.x1 - viewBox.x) * scaleX,
-          y1: (point.curve.y1 - viewBox.y) * scaleY,
-          x2: (point.curve.x2 - viewBox.x) * scaleX,
-          y2: (point.curve.y2 - viewBox.y) * scaleY,
+          x1: mapping.offsetX + (point.curve.x1 - viewBox.x) * mapping.scaleX,
+          y1: mapping.offsetY + (point.curve.y1 - viewBox.y) * mapping.scaleY,
+          x2: mapping.offsetX + (point.curve.x2 - viewBox.x) * mapping.scaleX,
+          y2: mapping.offsetY + (point.curve.y2 - viewBox.y) * mapping.scaleY,
         };
       }
       return mapped;
@@ -536,9 +672,6 @@ function transparency(opacity) {
  */
 export function lowerSimpleSvgPrimitives(node, { x, y, w, h, domOrder, zIndex, pptx, inheritedOpacity = 1 }) {
   if (hasUnrepresentedAncestorEffect(node)) return null;
-  if (node.getAttribute('preserveAspectRatio') && node.getAttribute('preserveAspectRatio').trim() !== 'xMidYMid meet') {
-    return null;
-  }
   if (!hasOnlySupportedAttributes(node, ROOT_ATTRIBUTES, true)) return null;
 
   const rootStyle = window.getComputedStyle(node);
@@ -546,10 +679,8 @@ export function lowerSimpleSvgPrimitives(node, { x, y, w, h, domOrder, zIndex, p
 
   const viewBox = readViewBox(node);
   if (!viewBox || w <= 0 || h <= 0) return null;
-
-  const scaleX = w / viewBox.width;
-  const scaleY = h / viewBox.height;
-  if (Math.abs(scaleX - scaleY) > Math.max(scaleX, scaleY) * 1e-3) return null;
+  const mapping = getViewBoxMapping(node, w, h, viewBox);
+  if (!mapping) return null;
 
   const nativeShapes = [];
   let primitiveIndex = 0;
@@ -581,6 +712,11 @@ export function lowerSimpleSvgPrimitives(node, { x, y, w, h, domOrder, zIndex, p
     const hasFill = Boolean(fill.color) && fillOpacity * fill.opacity > 0;
     const hasStroke = Boolean(stroke.color) && strokeOpacity * stroke.opacity > 0 && strokeWidth > 0;
     if (!hasFill && !hasStroke) continue;
+
+    const scaleTolerance = Math.max(mapping.scaleX, mapping.scaleY) * 1e-9;
+    if (mapping.mode === 'none' && hasStroke && Math.abs(mapping.scaleX - mapping.scaleY) > scaleTolerance) {
+      return null;
+    }
 
     const strokeHalfWidth = hasStroke ? strokeWidth / 2 : 0;
     let shapeType;
@@ -648,12 +784,12 @@ export function lowerSimpleSvgPrimitives(node, { x, y, w, h, domOrder, zIndex, p
 
     const fillTransparency = transparency(fill.opacity * fillOpacity);
     const strokeTransparency = transparency(stroke.opacity * strokeOpacity);
-    const pointsPerViewBoxUnit = scaleX * 72;
+    const pointsPerViewBoxUnit = mapping.scaleX * 72;
     const options = {
-      x: x + (shapeX - viewBox.x) * scaleX,
-      y: y + (shapeY - viewBox.y) * scaleY,
-      w: shapeW * scaleX,
-      h: shapeH * scaleY,
+      x: x + mapping.offsetX + (shapeX - viewBox.x) * mapping.scaleX,
+      y: y + mapping.offsetY + (shapeY - viewBox.y) * mapping.scaleY,
+      w: shapeW * mapping.scaleX,
+      h: shapeH * mapping.scaleY,
       fill: hasFill ? { color: fill.color, transparency: fillTransparency } : { color: 'FFFFFF', transparency: 100 },
       line: hasStroke
         ? { color: stroke.color, transparency: strokeTransparency, width: strokeWidth * pointsPerViewBoxUnit }
