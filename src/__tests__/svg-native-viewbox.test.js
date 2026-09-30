@@ -52,6 +52,21 @@ describe('SVG viewBox mapping for native PowerPoint shapes', () => {
           .slide:nth-of-type(7) svg,
           .slide:nth-of-type(8) svg { width: 200px; height: 100px; }
           .slide:nth-of-type(3) svg { width: 100px; height: 200px; }
+          .scaled-padded-ancestor {
+            position: absolute;
+            left: 20px;
+            top: 30px;
+            transform: scale(0.5);
+            transform-origin: top left;
+          }
+          .scaled-padded-ancestor svg {
+            box-sizing: border-box;
+            left: 5px;
+            top: 7px;
+            width: 200px;
+            height: 120px;
+            padding: 10px 20px 30px 40px;
+          }
         </style>
       </head>
       <body>
@@ -94,6 +109,20 @@ describe('SVG viewBox mapping for native PowerPoint shapes', () => {
           <svg viewBox="0 0 100 100" preserveAspectRatio="xMinYMid meet" xmlns="http://www.w3.org/2000/svg">
             <path d="M 10 20 L 30 20 L 30 40 Z" fill="#c26d4f" />
           </svg>
+        </div>
+        <div class="slide">
+          <div class="scaled-padded-ancestor">
+            <svg viewBox="10 20 100 100" xmlns="http://www.w3.org/2000/svg">
+              <rect x="20" y="40" width="30" height="40" fill="#c26d4f" />
+            </svg>
+          </div>
+        </div>
+        <div class="slide">
+          <div class="scaled-padded-ancestor">
+            <svg viewBox="10 20 100 100" xmlns="http://www.w3.org/2000/svg">
+              <path d="M 20 40 L 50 40 L 50 80 Z" fill="#c26d4f" />
+            </svg>
+          </div>
         </div>
       </body>
       </html>
@@ -185,6 +214,34 @@ describe('SVG viewBox mapping for native PowerPoint shapes', () => {
     expect(shape.getElementsByTagName('a:custGeom')).toHaveLength(1);
     expect(start.x).toBeCloseTo(emuFromPx(10), -1);
     expect(start.y).toBeCloseTo(emuFromPx(20), -1);
+    expect(xml.getElementsByTagName('p:pic')).toHaveLength(0);
+  });
+
+  it('maps padded border-box primitive geometry through the scaled SVG content viewport', async () => {
+    const xml = new DOMParser().parseFromString(await slideXml(zip, 9), 'text/xml');
+    const shape = xml.getElementsByTagName('p:sp')[0];
+    expect(shape).toBeTruthy();
+    const bounds = shapeTransform(shape);
+
+    expect(shape.getElementsByTagName('a:prstGeom')[0]?.getAttribute('prst')).toBe('rect');
+    expect(bounds.x).toBeCloseTo(emuFromPx(61.5), -1);
+    expect(bounds.y).toBeCloseTo(emuFromPx(46.5), -1);
+    expect(bounds.cx).toBeCloseTo(emuFromPx(12), -1);
+    expect(bounds.cy).toBeCloseTo(emuFromPx(16), -1);
+    expect(xml.getElementsByTagName('p:pic')).toHaveLength(0);
+  });
+
+  it('maps padded border-box custom path points through the scaled SVG content viewport', async () => {
+    const xml = new DOMParser().parseFromString(await slideXml(zip, 10), 'text/xml');
+    const shape = xml.getElementsByTagName('p:sp')[0];
+    expect(shape).toBeTruthy();
+    const start = firstPathPoint(shape);
+
+    expect(shape.getElementsByTagName('a:custGeom')).toHaveLength(1);
+    expect(shapeTransform(shape).x).toBeCloseTo(emuFromPx(22.5), -1);
+    expect(shapeTransform(shape).y).toBeCloseTo(emuFromPx(33.5), -1);
+    expect(start.x).toBeCloseTo(emuFromPx(39), -1);
+    expect(start.y).toBeCloseTo(emuFromPx(13), -1);
     expect(xml.getElementsByTagName('p:pic')).toHaveLength(0);
   });
 });

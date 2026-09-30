@@ -163,28 +163,53 @@ function readViewBox(node) {
 function getViewBoxMapping(node, width, height, viewBox) {
   const preserveAspectRatio = node.getAttribute('preserveAspectRatio')?.trim() || 'xMidYMid meet';
   const alignment = preserveAspectRatio.split(/\s+/);
-  const scaleX = width / viewBox.width;
-  const scaleY = height / viewBox.height;
-
-  if (alignment.length === 1 && alignment[0] === 'none') {
-    return { scaleX, scaleY, offsetX: 0, offsetY: 0, mode: 'none' };
-  }
-
+  const isNone = alignment.length === 1 && alignment[0] === 'none';
   if (
-    (alignment[0] !== 'xMidYMid' && alignment[0] !== 'xMinYMid') ||
-    (alignment.length > 1 && alignment[1] !== 'meet') ||
-    alignment.length > 2
+    !isNone &&
+    ((alignment[0] !== 'xMidYMid' && alignment[0] !== 'xMinYMid') ||
+      (alignment.length > 1 && alignment[1] !== 'meet') ||
+      alignment.length > 2)
   ) {
     return null;
   }
 
-  const scale = Math.min(scaleX, scaleY);
+  const bounds = node.getBoundingClientRect();
+  const matrix = node.getScreenCTM?.();
+  if (
+    !matrix ||
+    bounds.width <= 0 ||
+    bounds.height <= 0 ||
+    ![
+      bounds.left,
+      bounds.top,
+      bounds.width,
+      bounds.height,
+      matrix.a,
+      matrix.b,
+      matrix.c,
+      matrix.d,
+      matrix.e,
+      matrix.f,
+    ].every(Number.isFinite)
+  ) {
+    return null;
+  }
+
+  const matrixTolerance = Math.max(Math.abs(matrix.a), Math.abs(matrix.d), 1) * 1e-9;
+  if (matrix.a <= 0 || matrix.d <= 0 || Math.abs(matrix.b) > matrixTolerance || Math.abs(matrix.c) > matrixTolerance) {
+    return null;
+  }
+
+  const pxToInX = width / bounds.width;
+  const pxToInY = height / bounds.height;
+  const scaleX = matrix.a * pxToInX;
+  const scaleY = matrix.d * pxToInY;
+  // The screen matrix includes viewBox alignment and root padding; subtract the outer box origin for local PowerPoint geometry.
   return {
-    scaleX: scale,
-    scaleY: scale,
-    offsetX: alignment[0] === 'xMinYMid' ? 0 : (width - viewBox.width * scale) / 2,
-    offsetY: (height - viewBox.height * scale) / 2,
-    mode: 'meet',
+    scaleX,
+    scaleY,
+    offsetX: (matrix.e - bounds.left + viewBox.x * matrix.a) * pxToInX,
+    offsetY: (matrix.f - bounds.top + viewBox.y * matrix.d) * pxToInY,
   };
 }
 
@@ -495,6 +520,14 @@ function pathPointsAreInsideViewBox(points, viewBox, toleranceX, toleranceY) {
     }
 
     if (point.moveTo) {
+      if (
+        point.x < viewBox.x - toleranceX ||
+        point.x > viewBox.x + viewBox.width + toleranceX ||
+        point.y < viewBox.y - toleranceY ||
+        point.y > viewBox.y + viewBox.height + toleranceY
+      ) {
+        return false;
+      }
       current = { x: point.x, y: point.y };
       subpathStart = current;
       continue;
@@ -728,7 +761,7 @@ export function lowerSimpleSvgPrimitives(node, { x, y, w, h, domOrder, zIndex, p
     if (!hasFill && !hasStroke) continue;
 
     const scaleTolerance = Math.max(mapping.scaleX, mapping.scaleY) * 1e-9;
-    if (mapping.mode === 'none' && hasStroke && Math.abs(mapping.scaleX - mapping.scaleY) > scaleTolerance) {
+    if (hasStroke && Math.abs(mapping.scaleX - mapping.scaleY) > scaleTolerance) {
       return null;
     }
 

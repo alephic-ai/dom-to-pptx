@@ -124,6 +124,16 @@ describe('native SVG path export', () => {
             <rect x="50" y="50" width="20" height="20" fill="#c26d4f" />
           </svg>
         </div>
+        <div class="slide">
+          <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <path d="M -20 20 L 20 20 L 20 70 L 10 70 Z" fill="#c26d4f" />
+          </svg>
+        </div>
+        <div class="slide">
+          <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <path d="M 10 10 L 20 10 L 20 20 Z M -20 10 L 10 10 L 10 20 Z" fill="#c26d4f" />
+          </svg>
+        </div>
       </body>
       </html>
     `;
@@ -229,4 +239,17 @@ describe('native SVG path export', () => {
     expect(primitiveShapes[0].getElementsByTagName('a:prstGeom')[0]?.getAttribute('prst')).toBe('rect');
     expect(primitiveXml.getElementsByTagName('p:pic')).toHaveLength(0);
   });
+
+  it.each([14, 15])(
+    'keeps paths with an out-of-viewBox subpath start on the image fallback (slide %i)',
+    async (slideNumber) => {
+      const xml = new DOMParser().parseFromString(
+        await zip.file(`ppt/slides/slide${slideNumber}.xml`).async('string'),
+        'text/xml'
+      );
+
+      expect(xml.getElementsByTagName('p:sp')).toHaveLength(0);
+      expect(xml.getElementsByTagName('p:pic')).toHaveLength(1);
+    }
+  );
 });
